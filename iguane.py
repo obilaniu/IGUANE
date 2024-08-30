@@ -163,6 +163,13 @@ RAWDATA = {            #             TFLOPS          TFLOPS          TFLOPS     
 }
 
 
+VERSIONS = {
+    # v1.0 is equivalent to UGR
+    # https://docs.alliancecan.ca/wiki/Allocations_and_compute_scheduling
+    1.0: { 'fp16': 1.6, 'fp32': 1.6, 'tf32': 0.0, 'memgb': 0.8, 'membw': 0.0 },
+}
+
+
 @fom
 def fom_ugr(name, **kwargs):
     data = RAWDATA[name]
@@ -186,6 +193,19 @@ def fom_iguane(name, *, args=None):
            weight_tf32  * (data['tf32']  / ref['tf32'])  + \
            weight_memgb * (data['memgb'] / ref['memgb']) + \
            weight_membw * (data['membw'] / ref['membw'])
+
+@fom
+def fom_version(name, *, args=None):
+    data = RAWDATA[name].copy()
+    ref  = RAWDATA['A100-SXM4-40GB']
+    data['tf32'] = data['tf32'] or data['fp32']
+    weights = VERSIONS[args.version]
+    return sum(
+        [
+            weight * data[criteria] / ref[criteria]
+            for criteria, weight in weights.items()
+        ]
+    )
 
 
 if __name__ == "__main__":
@@ -215,18 +235,22 @@ if __name__ == "__main__":
     umtx.add_argument('--unit', '-u', '--fom', type=str.lower, default='iguane',
                       choices={'iguane', 'iguana', 'rgu', 'ugr'},
                       help="Select unit-equivalence (FoM) to compute for every GPU")
-    umtx.add_argument('--iguane', action='store_const', dest='unit', const='iguane',
+    umtx.add_argument('--iguane',  action='store_const', dest='unit', const='iguane',
                       help="Select IGUANE/IGUANA unit-equivalence")
-    umtx.add_argument('--iguana', action='store_const', dest='unit', const='iguane',
+    umtx.add_argument('--iguana',  action='store_const', dest='unit', const='iguane',
                       help="Select IGUANE/IGUANA unit-equivalence")
-    umtx.add_argument('--ugr',    action='store_const', dest='unit', const='ugr',
+    umtx.add_argument('--ugr',     action='store_const', dest='unit', const='ugr',
                       help="Select UGR/RGU unit-equivalence")
-    umtx.add_argument('--rgu',    action='store_const', dest='unit', const='ugr',
+    umtx.add_argument('--rgu',     action='store_const', dest='unit', const='ugr',
                       help="Select UGR/RGU unit-equivalence")
+    umtx.add_argument('--version', type=float, choices=VERSIONS.keys(),
+                      help="Select ponderation version")
     
     # Parse Arguments
     args = argp.parse_args(sys.argv[1:])
     args.unit = {'iguana': 'iguane', 'rgu': 'ugr'}.get(args.unit, args.unit)
+    if args.version:
+        args.unit = "version"
     assert args.delimiter, "Delimiter cannot be empty string!"
     
     
