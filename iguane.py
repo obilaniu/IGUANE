@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import copy
 import glob, re
 import json
 import sys
@@ -179,13 +180,26 @@ RAWDATA = {            #             TFLOPS          TFLOPS          TFLOPS     
     'H100-NVL-94GB':   dict(fp16=835.500000, fp32=60.000000, fp64=30.000000, tf32=417.250000, memgb= 94,  membw=3938, tdp=400),
 }
 
-
-UGR_VERSIONS = {
-    # v1.0 is equivalent to UGR
-    # https://docs.alliancecan.ca/wiki/Allocations_and_compute_scheduling
-    "1.0":        { 'fp16': 1.6, 'fp32': 1.6, 'memgb': 0.8 },
-    "1.0-renorm": { 'fp16': 0.4, 'fp32': 0.4, 'memgb': 0.2 },
+# DRAC does not take into account fp16 capabilities in his calculations for P100
+DRACDATA = {#                 TFLOPS
+    'P100-PCIe-12GB':  dict(fp16=0.0),
+    'P100-PCIe-16GB':  dict(fp16=0.0),
 }
+
+VERSIONDATA = {
+    '1.0': {
+        _gpu: {**_data, **DRACDATA.get(_gpu, {})}
+        for _gpu, _data in RAWDATA.items()
+    }
+}
+
+FOM_VERSIONS_WEIGHTS = {
+    # v1.0 is equivalent to RGU
+    # https://docs.alliancecan.ca/wiki/Allocations_and_compute_scheduling
+    '1.0': { 'ref': 'A100-SXM4-40GB', 'fp16': 1.6, 'fp32': 1.6, 'memgb': 0.8 },
+}
+
+_CURRENT_FOM_VERSION = list(reversed(sorted(FOM_VERSIONS_WEIGHTS.keys())))[0]
 
 
 @fom
@@ -208,12 +222,9 @@ def fom_tf32(name, *, args=None):
 
 @fom
 def fom_ugr(name, *, args=None):
-    weights = UGR_VERSIONS[args.ugr_version if args else "1.0"]
-    ref  = RAWDATA['A100-SXM4-40GB']
-    data = RAWDATA[name].copy()
-    data['tf32'] = data['tf32'] or data['fp32']
-    data['fp16'] = data['fp16'] or data['fp32']
-    return sum([w * (data[k] / ref[k]) for k, w in weights.items()])
+    args = copy.copy(args)
+    args.fom_version = '1.0'
+    return fom_version(name, args=args)
 
 @fom
 def fom_iguane(name, *, args=None):
@@ -232,6 +243,16 @@ def fom_iguane(name, *, args=None):
            weight_memgb * (data['memgb'] / ref['memgb']) + \
            weight_membw * (data['membw'] / ref['membw'])
 
+@fom
+def fom_version(name, *, args=None):
+    fom_version = args.fom_version if args else _CURRENT_FOM_VERSION
+    weights = FOM_VERSIONS_WEIGHTS[fom_version]
+    raw_data = VERSIONDATA.get(fom_version, RAWDATA)
+    ref  = raw_data[weights.pop('ref', 'A100-SXM4-40GB')]
+    data = raw_data[name].copy()
+    data['tf32'] = data['tf32'] if data['tf32'] is not None else data['fp32']
+    data['fp16'] = data['fp16'] if data['fp16'] is not None else data['fp32']
+    return sum([w * (data[k] / ref[k]) for k, w in weights.items()])
 
 
 if __name__ == "__main__":
@@ -274,14 +295,14 @@ if __name__ == "__main__":
                       help="Select UGR/RGU unit-equivalence")
     umtx.add_argument('--rgu',     action='store_const', dest='unit', const='ugr',
                       help="Select UGR/RGU unit-equivalence")
-    ugrp.add_argument('--ugr-version', type=str, default='1.0',
-                      choices=UGR_VERSIONS.keys(),
-                      help="Select UGR ponderation version")
+    ugrp.add_argument('--fom-version', type=str, choices=FOM_VERSIONS_WEIGHTS.keys(),
+                      help="Select Figure-of-Merit ponderation version")
     
     # Parse Arguments
     args = argp.parse_args(sys.argv[1:])
     args.unit = {'iguana': 'iguane', 'rgu': 'ugr'}.get(args.unit, args.unit)
-    
+    if args.fom_version:
+        args.unit = "version"
     
     if   args.list_units:
         units = list(FOM.keys())
@@ -303,10 +324,10 @@ if __name__ == "__main__":
             for k in gpus:
                 print(k)
     elif args.list_ugr_versions:
-        ugr_versions = UGR_VERSIONS.keys()
+        ugr_versions = FOM_VERSIONS_WEIGHTS.keys()
         if args.reverse:
             ugr_versions = reversed(ugr_versions)
-        ugr_versions = {k:UGR_VERSIONS[k] for k in ugr_versions}
+        ugr_versions = {k:FOM_VERSIONS_WEIGHTS[k] for k in ugr_versions}
         if args.json:
             print(json.dumps(ugr_versions, indent=2))
         else:
